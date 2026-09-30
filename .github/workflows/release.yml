@@ -56,9 +56,9 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: mingw64
+          msystem: ucrt64
           update: false
-          install: mingw-w64-x86_64-gcc make
+          install: mingw-w64-ucrt-x86_64-gcc make
 
       - name: Build
         run: |
@@ -82,7 +82,9 @@ jobs:
           - os: macos-latest
             arch: apple-silicon
             label: apple-silicon
-          - os: macos-13
+          # Cross-compile Intel from Apple silicon. macos-13 Intel runners
+          # queue for a long time and would block the package job.
+          - os: macos-latest
             arch: x86-64-avx2
             label: x86-64-avx2
     steps:
