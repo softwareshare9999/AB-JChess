@@ -1061,7 +1061,7 @@ clean: objclean profileclean
 
 # clean binaries and objects
 objclean:
-	@rm -f AB-JChess AB-JChess.exe $(shell find . -name "*.o") \
+	@rm -f AB-JChess AB-JChess.exe $(EXE) $(shell find . -name "*.o") \
 		$(ABJNNUE_SHA256_TEST_OBJ) $(ABJNNUE_SHA256_TEST_EXE) \
 		$(POSITION_PROTOCOL_TEST_OBJ) $(POSITION_PROTOCOL_TEST_EXE) \
 		$(SKYRULE_JIEQI_TEST_OBJ) $(SKYRULE_JIEQI_TEST_EXE)
@@ -1070,10 +1070,11 @@ objclean:
 profileclean:
 	@rm -rf profdir
 	@rm -f bench.txt $(shell find . -name "*.gcda" -o -name "*.gcno") *.s PGOBENCH.out
-	@rm -f AB-JChess.profdata *.profraw
-	@rm -f AB-JChess.*args*
-	@rm -f AB-JChess.*lt*
-	@rm -f AB-JChess.res
+	@rm -f AB-JChess.profdata $(EXE).profdata *.profraw
+	@rm -f AB-JChess.*args* $(EXE).*args*
+	@rm -f AB-JChess.*lt* $(EXE).*lt*
+	@rm -f AB-JChess.res $(EXE).res
+	@rm -f *.lto_wrapper_args *.ltrans_args *.wpa.args.*
 	@rm -f ./-lstdc++.res
 
 # Check the selected runtime package.

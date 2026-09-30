@@ -181,9 +181,11 @@ std::string engine_version_info() {
 
 std::string engine_info(bool to_uci) {
     if (to_uci)
-        return engine_version_info() + "\nid author Huorongrong,Laoxu(Kouza)";
+        return engine_version_info()
+             + "\nid author Huorongrong,Laoxu(Kouza),softwareshare9999.pages.dev";
 
-    return engine_version_info() + " by Huorongrong,Laoxu(Kouza)\n"
+    return engine_version_info()
+         + " by Huorongrong,Laoxu(Kouza),softwareshare9999.pages.dev\n"
          + "AB JChess is free of charge. Resale is prohibited.";
 }
 

@@ -1,0 +1,19 @@
+# AB-JChess authors
+
+Huorongrong
+Laoxu (Kouza)
+
+# This fork (packaging, CI, cross-platform builds)
+
+softwareshare9999.pages.dev (https://github.com/softwareshare9999)
+
+# GitHub Actions / Android CI (cherry-picked)
+
+hefengfan0615 (https://github.com/hefengfan0615/AB-JChess)
+
+# Upstream projects
+
+AB-JChess is derived from Pikafish, which is derived from Stockfish.
+
+Pikafish developers: https://github.com/official-pikafish/Pikafish/blob/master/AUTHORS
+Stockfish developers: https://github.com/official-stockfish/Stockfish/blob/master/AUTHORS

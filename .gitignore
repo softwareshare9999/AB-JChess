@@ -67,3 +67,18 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Local engine binaries and GCC LTO leftovers
+/src/AB-JChess
+/src/AB-JChess-*
+/src/PikaJieQi*
+.depend
+*.lto_wrapper_args
+*.ltrans_args
+*.ltrans0.*
+*.wpa.args.*
+*.res
+
+# Network weights (download from a release; do not commit)
+*.nnue
+/release/

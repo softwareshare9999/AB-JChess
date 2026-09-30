@@ -1,0 +1,180 @@
+name: Release binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86-64-avx2
+            os: ubuntu-24.04
+          - arch: x86-64-bmi2
+            os: ubuntu-24.04
+          - arch: armv8
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: src
+        run: |
+          EXE="AB-JChess-linux-${{ matrix.arch }}"
+          make -j"$(nproc)" build ARCH=${{ matrix.arch }} EXE="$EXE"
+          make strip ARCH=${{ matrix.arch }} EXE="$EXE"
+          file "$EXE"
+          ls -la "$EXE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AB-JChess-linux-${{ matrix.arch }}
+          path: src/AB-JChess-linux-${{ matrix.arch }}
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86-64-avx2, x86-64-bmi2]
+    defaults:
+      run:
+        shell: msys2 {0}
+        working-directory: src
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: false
+          install: mingw-w64-x86_64-gcc make
+
+      - name: Build
+        run: |
+          EXE="AB-JChess-windows-${{ matrix.arch }}.exe"
+          make -j build COMP=mingw ARCH=${{ matrix.arch }} EXE="$EXE"
+          make strip COMP=mingw ARCH=${{ matrix.arch }} EXE="$EXE"
+          ls -la "$EXE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AB-JChess-windows-${{ matrix.arch }}
+          path: src/AB-JChess-windows-${{ matrix.arch }}.exe
+
+  macos:
+    name: macOS ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: apple-silicon
+            label: apple-silicon
+          - os: macos-13
+            arch: x86-64-avx2
+            label: x86-64-avx2
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: src
+        run: |
+          EXE="AB-JChess-macos-${{ matrix.label }}"
+          make -j"$(sysctl -n hw.ncpu)" build COMP=clang ARCH=${{ matrix.arch }} EXE="$EXE"
+          make strip COMP=clang ARCH=${{ matrix.arch }} EXE="$EXE"
+          file "$EXE"
+          ls -la "$EXE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AB-JChess-macos-${{ matrix.label }}
+          path: src/AB-JChess-macos-${{ matrix.label }}
+
+  android:
+    name: Android armv8
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Android NDK (r27d)
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: false
+
+      - name: Build
+        env:
+          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        working-directory: src
+        run: |
+          export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          EXE=AB-JChess-android-armv8
+          make -j"$(nproc)" build COMP=ndk ARCH=armv8 EXE="$EXE"
+          make strip COMP=ndk ARCH=armv8 EXE="$EXE"
+          file "$EXE"
+          ls -la "$EXE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AB-JChess-android-armv8
+          path: src/AB-JChess-android-armv8
+
+  package:
+    name: Package binaries
+    needs: [linux, windows, macos, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Download NNUE weights
+        run: bash .github/scripts/fetch_nnue.sh dist
+
+      - name: Add docs
+        run: |
+          cp AUTHORS LICENSE README.md dist/
+          chmod +x dist/AB-JChess-* || true
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AB-JChess-all
+          path: dist/
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            Cross-platform AB-JChess binaries from this fork.
+
+            Place `abjchess-20260911.nnue` next to the engine, or set:
+            `setoption name EvalFile value /path/to/abjchess-20260911.nnue`
+
+            Pick the binary that matches your OS and CPU:
+            - Windows: `avx2` is the portable build; `bmi2` is faster on Haswell and later
+            - Linux x86-64: same `avx2` / `bmi2` split
+            - Linux ARM: `AB-JChess-linux-armv8`
+            - macOS: `apple-silicon` (M1+) or `x86-64-avx2` (Intel)
+            - Android: `AB-JChess-android-armv8` (aarch64)
