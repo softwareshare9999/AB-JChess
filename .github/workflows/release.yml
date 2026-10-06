@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build
-        working-directory: src
+        working-directory: abjchess/src
         run: |
           EXE="AB-JChess-linux-${{ matrix.arch }}"
           make -j"$(nproc)" build ARCH=${{ matrix.arch }} EXE="$EXE"
@@ -38,7 +38,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: AB-JChess-linux-${{ matrix.arch }}
-          path: src/AB-JChess-linux-${{ matrix.arch }}
+          path: abjchess/src/AB-JChess-linux-${{ matrix.arch }}
 
   windows:
     name: Windows ${{ matrix.arch }}
@@ -50,7 +50,7 @@ jobs:
     defaults:
       run:
         shell: msys2 {0}
-        working-directory: src
+        working-directory: abjchess/src
     steps:
       - uses: actions/checkout@v4
 
@@ -70,7 +70,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: AB-JChess-windows-${{ matrix.arch }}
-          path: src/AB-JChess-windows-${{ matrix.arch }}.exe
+          path: abjchess/src/AB-JChess-windows-${{ matrix.arch }}.exe
 
   macos:
     name: macOS ${{ matrix.label }}
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build
-        working-directory: src
+        working-directory: abjchess/src
         run: |
           EXE="AB-JChess-macos-${{ matrix.label }}"
           make -j"$(sysctl -n hw.ncpu)" build COMP=clang ARCH=${{ matrix.arch }} EXE="$EXE"
@@ -102,7 +102,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: AB-JChess-macos-${{ matrix.label }}
-          path: src/AB-JChess-macos-${{ matrix.label }}
+          path: abjchess/src/AB-JChess-macos-${{ matrix.label }}
 
   android:
     name: Android armv8
@@ -120,7 +120,7 @@ jobs:
       - name: Build
         env:
           NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
-        working-directory: src
+        working-directory: abjchess/src
         run: |
           export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           EXE=AB-JChess-android-armv8
@@ -132,7 +132,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: AB-JChess-android-armv8
-          path: src/AB-JChess-android-armv8
+          path: abjchess/src/AB-JChess-android-armv8
 
   package:
     name: Package binaries
@@ -171,8 +171,8 @@ jobs:
           body: |
             Cross-platform AB-JChess binaries from this fork.
 
-            Place `abjchess-20260911.nnue` next to the engine, or set:
-            `setoption name EvalFile value /path/to/abjchess-20260911.nnue`
+            Place `abjchess-20261004.nnue` next to the engine, or set:
+            `setoption name EvalFile value /path/to/abjchess-20261004.nnue`
 
             Pick the binary that matches your OS and CPU:
             - Windows: `avx2` is the portable build; `bmi2` is faster on Haswell and later

@@ -69,9 +69,9 @@ Testing/
 .cache/
 
 # Local engine binaries and GCC LTO leftovers
-/src/AB-JChess
-/src/AB-JChess-*
-/src/PikaJieQi*
+/abjchess/src/AB-JChess
+/abjchess/src/AB-JChess-*
+/abjchess/src/PikaJieQi*
 .depend
 *.lto_wrapper_args
 *.ltrans_args

@@ -28,7 +28,7 @@ jobs:
           NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
         run: |
           export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-          cd src
+          cd abjchess/src
           make -j"$(nproc)" build COMP=ndk ARCH=armv8 EXE=AB-JChess-android-armv8
           make strip COMP=ndk ARCH=armv8 EXE=AB-JChess-android-armv8
           file AB-JChess-android-armv8
@@ -37,7 +37,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: AB-JChess-android-armv8
-          path: src/AB-JChess-android-armv8
+          path: abjchess/src/AB-JChess-android-armv8
 
   linux-test:
     name: Linux AVX2 + UCI smoke test
@@ -50,12 +50,12 @@ jobs:
 
       - name: Build native engine
         run: |
-          cd src
+          cd abjchess/src
           make -j"$(nproc)" build ARCH=x86-64-avx2 EXE=AB-JChess-linux-x86-64-avx2
           make strip ARCH=x86-64-avx2 EXE=AB-JChess-linux-x86-64-avx2
 
       - name: Run engine go depth test
         run: |
           python3 .github/scripts/uci_depth_test.py \
-            src/AB-JChess-linux-x86-64-avx2 \
-            nnue/abjchess-20260911.nnue
+            abjchess/src/AB-JChess-linux-x86-64-avx2 \
+            nnue/abjchess-20261004.nnue

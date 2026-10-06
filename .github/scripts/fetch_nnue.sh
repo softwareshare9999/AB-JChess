@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Download the V8.2 EvalFile shipped with official AB-JChess releases.
+# Download the V11 EvalFile shipped with official AB-JChess releases.
 set -euo pipefail
 
 DEST="${1:-nnue}"
-NNUE_NAME="${NNUE_NAME:-abjchess-20260911.nnue}"
-RELEASE="${NNUE_RELEASE:-v0.2b}"
-ASSET="${NNUE_ASSET:-0.2b_bmi2.zip}"
+NNUE_NAME="${NNUE_NAME:-abjchess-20261004.nnue}"
+RELEASE="${NNUE_RELEASE:-v0.2c}"
+ASSET="${NNUE_ASSET:-0.2c_bmi2.zip}"
 REPO="${NNUE_REPO:-lxsgx23/AB-JChess}"
 
 mkdir -p "$DEST"
