@@ -1,8 +1,7 @@
 name: CI
 
+# Pushes to main and tags are built and smoke-tested by release.yml.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -10,8 +9,6 @@ on:
 jobs:
   android:
     name: Android armv8
-    # Release workflow already builds Android on main; keep this job for PRs.
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

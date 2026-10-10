@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   linux:
     name: Linux ${{ matrix.arch }}
@@ -150,6 +154,13 @@ jobs:
 
       - name: Download NNUE weights
         run: bash .github/scripts/fetch_nnue.sh dist
+
+      - name: Run engine go depth test
+        run: |
+          chmod +x dist/AB-JChess-linux-x86-64-avx2
+          python3 .github/scripts/uci_depth_test.py \
+            dist/AB-JChess-linux-x86-64-avx2 \
+            "dist/$NNUE_NAME"
 
       - name: Add docs
         run: |
