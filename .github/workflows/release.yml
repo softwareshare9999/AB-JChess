@@ -173,14 +173,23 @@ jobs:
           name: AB-JChess-all
           path: dist/
 
+      - name: Zip release package
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          PKG="AB-JChess-${GITHUB_REF_NAME}"
+          mv dist "$PKG"
+          zip -r -9 "$PKG.zip" "$PKG"
+          ls -la "$PKG.zip"
+          echo "PKG_ZIP=$PKG.zip" >> "$GITHUB_ENV"
+
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: ${{ env.PKG_ZIP }}
           generate_release_notes: true
           body: |
-            Cross-platform AB-JChess binaries from this fork.
+            Cross-platform AB-JChess binaries from this fork, packaged as one zip.
 
             Place `${{ env.NNUE_NAME }}` next to the engine, or set:
             `setoption name EvalFile value /path/to/${{ env.NNUE_NAME }}`
