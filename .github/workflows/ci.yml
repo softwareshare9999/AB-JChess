@@ -58,4 +58,4 @@ jobs:
         run: |
           python3 .github/scripts/uci_depth_test.py \
             abjchess/src/AB-JChess-linux-x86-64-avx2 \
-            nnue/abjchess-20261004.nnue
+            "nnue/$NNUE_NAME"

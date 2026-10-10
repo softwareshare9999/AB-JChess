@@ -18,10 +18,10 @@ AB-JChess is a free, open-source UCI engine for **Jieqi** (also known as "uncove
 
 Download a tagged [Release](https://github.com/softwareshare9999/AB-JChess/releases), or take the `AB-JChess-all` artifact from the latest [Actions](https://github.com/softwareshare9999/AB-JChess/actions) run.
 
-Each package includes `abjchess-20261004.nnue`. Put that file next to the engine binary (the default `EvalFile` name) or set it explicitly:
+Each package includes the `.nnue` network from the matching upstream release (currently `abjchess-20261010.nnue`, from v0.2d). Put that file next to the engine binary (the default `EvalFile` name) or set it explicitly:
 
 ```text
-setoption name EvalFile value /path/to/abjchess-20261004.nnue
+setoption name EvalFile value /path/to/abjchess-20261010.nnue
 ```
 
 | File | Use when |

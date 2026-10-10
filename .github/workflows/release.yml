@@ -171,8 +171,8 @@ jobs:
           body: |
             Cross-platform AB-JChess binaries from this fork.
 
-            Place `abjchess-20261004.nnue` next to the engine, or set:
-            `setoption name EvalFile value /path/to/abjchess-20261004.nnue`
+            Place `${{ env.NNUE_NAME }}` next to the engine, or set:
+            `setoption name EvalFile value /path/to/${{ env.NNUE_NAME }}`
 
             Pick the binary that matches your OS and CPU:
             - Windows: `avx2` is the portable build; `bmi2` is faster on Haswell and later
