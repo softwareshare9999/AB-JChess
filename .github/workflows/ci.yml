@@ -30,6 +30,14 @@ jobs:
             abjchess/out-linux/abjchess-linux-x86-64 \
             "nnue/$NNUE_NAME"
 
+      # Guards the PengfeiChess bug: a FEN dialect the engine refuses used to leave the previous
+      # position in place, so the engine answered for the wrong side.
+      - name: Run GUI dialect test
+        run: |
+          python3 .github/scripts/gui_dialects.py \
+            abjchess/out-linux/abjchess-linux-x86-64 \
+            "nnue/$NNUE_NAME" --depth 3
+
       - name: Verify bench signature
         run: |
           cd abjchess/out-linux

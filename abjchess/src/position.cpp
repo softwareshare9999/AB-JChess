@@ -65,6 +65,29 @@ bool fail(std::string* error, const char* text) {
     return false;
 }
 
+bool all_digits(const std::string& s) {
+    return !s.empty() && std::all_of(s.begin(), s.end(), [](unsigned char ch) { return std::isdigit(ch); });
+}
+
+// The pool field is counts of hidden-piece identities (R A C P N B), or the placeholder '-'. Some GUIs
+// prefix it with '$' (the ACE UCI_PF dialect writes `board $pools side ...`). A token that starts with a
+// digit, or with a letter that is not one of the six identities, is not a pool: it is a move counter or a
+// castling-style placeholder. 'K' and 'X' are excluded on purpose: no pool can hold a king, and a
+// face-down marker would mean the GUI is describing the board twice.
+bool looks_like_pool(const std::string& token) {
+    std::string s = token;
+    if (!s.empty() && s[0] == '$') s.erase(0, 1);
+    if (s.empty()) return false;
+    if (s == "-") return true;
+    for (const char ch : s) {
+        if (std::isdigit(static_cast<unsigned char>(ch))) continue;
+        const PieceType t = type_from_char(ch);
+        if (t < ROOK || t > SOLDIER) return false;
+    }
+    const PieceType first = type_from_char(s[0]);
+    return first >= ROOK && first <= SOLDIER;
+}
+
 // SkyRule helpers are defined with the chase classifier below. They are
 // forward-declared here because make/unmake records the action immediately
 // after applying a move.
@@ -217,16 +240,59 @@ bool Position::set_fen_impl(const std::string& fen, std::string* error) {
     std::vector<std::string> fields;
     std::istringstream in(fen);
     for (std::string field; in >> field;) fields.push_back(field);
-    if (fields.size() == 4)
-        fields.insert(fields.begin() + 2, "-");
-    if (fields.size() != 5 && fields.size() != 6)
-        return fail(error, "FEN requires five or six fields");
+    if (fields.size() < 2) return fail(error, "FEN needs a board and a side to move");
+
+    // The fields around the side to move differ per GUI, so they are classified by shape instead of by
+    // position. All of these describe the same position:
+    //   Pikafish / bare UCI   board side pools no-capture number
+    //   JieqiBox              board side pools captured no-capture number
+    //   PengfeiChess 7-field  board side pools captured - - no-capture number
+    //   PengfeiChess 6-field  board side pools captured - no-capture number
+    //   ACE UCI_PF (Pengfei)  board $pools side - - no-capture number
+    // In every dialect the pools are the first field holding identity counts ('-' when empty, '$'-marked in
+    // ACE), the counters are the trailing all-digit fields, and the side is the single w/r/b field before
+    // them. A field naming the face-down pieces the opponent captured is ignored: the urn already treats
+    // those identities as unknown, so it carries no information the engine can use.
+    std::vector<std::size_t> counters;
+    std::vector<std::size_t> poolCandidates;
+    std::size_t sideIdx = std::string::npos;
+    for (std::size_t i = 1; i < fields.size(); ++i) {
+        const std::string& f = fields[i];
+        if (all_digits(f)) {
+            counters.push_back(i);
+            continue;
+        }
+        // The side is tested before the pool: a bare "b" would otherwise read as an elephant count.
+        if ((f == "w" || f == "r" || f == "b") && sideIdx == std::string::npos)
+            sideIdx = i;
+        else if (looks_like_pool(f))
+            poolCandidates.push_back(i);
+    }
+    const bool noCounters = counters.empty();  // JieqiBox omits both counters in some FENs
+    if (sideIdx == std::string::npos) return fail(error, "FEN needs a side to move");
+    if (!noCounters && sideIdx > counters.front())
+        return fail(error, "FEN needs a no-capture count after the side to move");
+    if (counters.size() == 1) return fail(error, "FEN has a no-capture count but no move number");
+    // The pool sits next to the side to move: after it in every dialect except ACE, which puts
+    // `$pools` before it. Anchoring on the side keeps the captured-identities field -- which has the same
+    // shape as a pool, e.g. "R1" -- from ever being mistaken for it.
+    const auto isPool = [&](const std::size_t i) {
+        return i < fields.size()
+            && std::find(poolCandidates.begin(), poolCandidates.end(), i) != poolCandidates.end();
+    };
+    std::size_t poolIdx = std::string::npos;
+    for (const std::size_t i : poolCandidates)
+        if (!fields[i].empty() && fields[i][0] == '$') { poolIdx = i; break; }  // ACE's marker wins outright
+    if (poolIdx == std::string::npos && isPool(sideIdx + 1)) poolIdx = sideIdx + 1;
+    if (poolIdx == std::string::npos && sideIdx > 0 && isPool(sideIdx - 1)) poolIdx = sideIdx - 1;
+    if (poolIdx == std::string::npos && !poolCandidates.empty()) poolIdx = poolCandidates.front();
 
     const std::string& boardText = fields[0];
-    const std::string& side = fields[1];
-    const std::string& pools = fields[2];
-    const std::string& clock = fields[fields.size() == 6 ? 4 : 3];
-    const std::string& number = fields[fields.size() == 6 ? 5 : 4];
+    const std::string side = fields[sideIdx];
+    std::string pools = poolIdx == std::string::npos ? "-" : fields[poolIdx];
+    if (!pools.empty() && pools[0] == '$') pools.erase(0, 1);  // ACE UCI_PF marker
+    const std::string clock = noCounters ? std::string("0") : fields[counters.front()];
+    const std::string number = noCounters ? std::string("1") : fields[counters.back()];
     int halfmove = 0, fullmove = 0;
     if (!parse_nonnegative(clock, "halfmove clock", halfmove)
         || !parse_nonnegative(number, "fullmove number", fullmove))
@@ -282,7 +348,7 @@ bool Position::set_fen_impl(const std::string& fen, std::string* error) {
     }
     if (rank != 0 || file != 9) return fail(error, "board must have 10 ranks");
     if (kingCount[0] != 1 || kingCount[1] != 1) return fail(error, "board must contain exactly one king per side");
-    if (side == "w") stm = RED;
+    if (side == "w" || side == "r") stm = RED;  // JieqiBox writes "w", some GUIs write "r" for red
     else if (side == "b") stm = BLACK;
     else return fail(error, "bad side to move");
     std::memset(urn, 0, sizeof urn);
@@ -1691,39 +1757,35 @@ bool Position::has_major(Color c) const {
 }
 
 bool Position::apply_token(const std::string& token, std::string* error) {
-    if (token.size() < 4 || token.size() > 6)
-        return fail(error, "move token must contain four coordinates and valid identities");
+    if (token.size() < 4) return fail(error, "move token must contain four coordinates");
     const Move base = parse_move_coords(token);
     if (base == MOVE_NONE) return fail(error, "bad move token");
     const Piece mover = board[from_sq(base)];
     const Piece victim = board[to_sq(base)];
     const bool movedDark = mover && type_of(mover) == DARK;
     const bool capturedDark = victim && type_of(victim) == DARK;
-    const std::size_t minimumSize = 4 + std::size_t(movedDark);
-    const std::size_t maximumSize = minimumSize + std::size_t(capturedDark);
-    if (token.size() < minimumSize || token.size() > maximumSize)
-        return fail(error, "identity suffix does not match the hidden move/capture");
-
-    auto parse_identity = [&](char ch, Color expected, PieceType& parsed, const char* role) {
-        const PieceType t = type_from_char(ch);
-        if (t < ROOK || t > SOLDIER) {
-            if (error) *error = std::string("invalid ") + role + " identity suffix";
-            return false;
-        }
-        const Color color = std::isupper(static_cast<unsigned char>(ch)) ? RED : BLACK;
-        if (color != expected) {
-            if (error) *error = std::string("wrong color for ") + role + " identity suffix";
-            return false;
-        }
-        parsed = t;
-        return true;
-    };
-
+    // GUIs append the revealed / captured identities after the coordinates in their own order and some
+    // write an 'x' marker as well (Pikafish writes it after a lone reveal), so the suffix is read by
+    // colour rather than by position: an uppercase letter is the mover's reveal, a lowercase one is the
+    // identity the opponent lost. Anything else is ignored instead of rejecting a move that the GUI
+    // believes it has successfully played.
     PieceType reveal = NO_TYPE, capturedId = NO_TYPE;
-    std::size_t suffix = 4;
-    if (movedDark && !parse_identity(token[suffix++], stm, reveal, "moved-dark")) return false;
-    if (capturedDark && suffix < token.size()
-        && !parse_identity(token[suffix++], ~stm, capturedId, "captured-dark")) return false;
+    for (std::size_t i = 4; i < token.size(); ++i) {
+        const char ch = token[i];
+        if (ch == 'x' || ch == 'X') continue;
+        const PieceType t = type_from_char(ch);
+        if (t < ROOK || t > SOLDIER) continue;
+        if ((std::isupper(static_cast<unsigned char>(ch)) != 0) == (stm == RED)) reveal = t;
+        else capturedId = t;
+    }
+    // A face-down piece must have turned over something, so a missing reveal is a real error: guessing an
+    // identity here would corrupt the pool and every later evaluation.
+    if (movedDark && reveal == NO_TYPE)
+        return fail(error, "a face-down piece moved without a reveal identity");
+    if (!movedDark && reveal != NO_TYPE)
+        return fail(error, "identity suffix given for a face-up mover");
+    if (!capturedDark && capturedId != NO_TYPE)
+        return fail(error, "captured identity suffix given but no face-down piece was taken");
     return apply_observed(base, reveal, capturedId, error);
 }
 

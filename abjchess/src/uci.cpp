@@ -163,6 +163,7 @@ struct Engine {
     Searcher searcher{1, 64};
     Thread thread;
     std::string evalFile;
+    std::string rejectedPositionFen;  // set when the last `position` was refused; makes a later `go` loud
     std::string netType = "auto";  // isa: NetType override (auto / small / big)
 
     // Kind of the active evaluation net, auto-detected by the loader from the file magic / layout / JQT1 trailer:
@@ -362,12 +363,17 @@ struct Engine {
         Position next;
         if (!next.set_fen(fen, &err)) {
             out("info string bad fen: " + err);
+            // Keep the previous position (a GUI may recover), but make it loud that a following search
+            // would answer for stale state rather than silently returning a plausible wrong move.
+            rejectedPositionFen = fen;
             return;
         }
+        rejectedPositionFen.clear();
         if (hasMoves)
             while (is >> tok)
                 if (!next.apply_token(tok, &err)) {
                     out("info string bad move " + tok + ": " + err);
+                    rejectedPositionFen = fen + " moves " + tok;
                     return;
                 }
         pos = next;
@@ -401,6 +407,13 @@ struct Engine {
         Position root = pos;
         if (perftDepth > 0) {
             out("Nodes searched: " + std::to_string(search::perft(root, perftDepth)));
+            return;
+        }
+        if (!rejectedPositionFen.empty()) {
+            // The last `position` was refused, so `pos` is *not* the position the GUI is showing. Answering
+            // here is how an engine ends up moving for the other side: say so instead of guessing.
+            out("info string refusing to search: the last position command was rejected");
+            out("bestmove (none)");
             return;
         }
         if (refuse_without_net()) { out("bestmove (none)"); return; }  // no silent fallback to another evaluation
@@ -487,7 +500,7 @@ int uci_loop(int argc, char** argv) {
         else if (cmd == "isready") engine.cmd_isready();
         else if (cmd == "ponderhit") engine.searcher.ponderhit();
         else if (cmd == "debug" || cmd == "register") { }
-        else if (cmd == "ucinewgame") { engine.wait(); engine.searcher.clear(); }
+        else if (cmd == "ucinewgame") { engine.wait(); engine.searcher.clear(); engine.rejectedPositionFen.clear(); }
         else if (cmd == "setoption") engine.cmd_setoption(is);
         else if (cmd == "position") { engine.wait(); engine.cmd_position(is); }
         else if (cmd == "go") engine.cmd_go(is);
