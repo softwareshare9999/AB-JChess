@@ -252,7 +252,9 @@ bool Position::set_fen_impl(const std::string& fen, std::string* error) {
     // In every dialect the pools are the first field holding identity counts ('-' when empty, '$'-marked in
     // ACE), the counters are the trailing all-digit fields, and the side is the single w/r/b field before
     // them. A field naming the face-down pieces the opponent captured is ignored: the urn already treats
-    // those identities as unknown, so it carries no information the engine can use.
+    // those identities as unknown, so it carries no information the engine can use. A pool that is short of the
+    // face-down pieces is topped up rather than refused (see the urn bookkeeping below), because the GUI lets the
+    // user edit those counts.
     std::vector<std::size_t> counters;
     std::vector<std::size_t> poolCandidates;
     std::size_t sideIdx = std::string::npos;
@@ -310,6 +312,7 @@ bool Position::set_fen_impl(const std::string& fen, std::string* error) {
     // never the previous position's or indeterminate pool / counters / history.
     std::memset(urn, 0, sizeof urn);
     urnTotal[0] = urnTotal[1] = 0;
+    urnToppedUp[0] = urnToppedUp[1] = 0;
     stm = RED;
     noCapture = 0;
     gamePly = 0;
@@ -375,10 +378,28 @@ bool Position::set_fen_impl(const std::string& fen, std::string* error) {
             urn[c][slot] = int8_t(n);
         }
     }
+    // A pool may arrive short of the face-down pieces on the board: a GUI lets the user edit the remaining-piece
+    // counts, and a face-down piece captured without the opponent learning its identity leaves the pool describing
+    // strictly more possibilities than there are pieces. Treating that as an error is wrong for both cases -- the
+    // GUI then sees "bestmove (none)", concludes the board and the engine disagree, and resyncs, discarding the
+    // user's edit. Cover the shortfall instead, from the lowest-count identity up (chariot first, soldier last),
+    // which keeps the urn mean as close as possible to what the pool already implies. Every added identity is
+    // counted in urnToppedUp so cmd_position can report the repair; the move generator, evaluator and search treat
+    // the result as an ordinary pool.
     for (int c = 0; c < 2; ++c) {
         urnTotal[c] = 0;
         for (int sl = 0; sl < NUM_SLOTS; ++sl) urnTotal[c] = int8_t(urnTotal[c] + urn[c][sl]);
-        if (urnTotal[c] < darkCount[c]) return fail(error, "pool smaller than face-down count");
+        urnToppedUp[c] = 0;
+        while (urnTotal[c] < darkCount[c]) {
+            int pick = -1;
+            for (int sl = 0; sl < NUM_SLOTS; ++sl)
+                if (urn[c][sl] < URN_INIT[sl] && (pick < 0 || urn[c][sl] < urn[c][pick])) pick = sl;
+            if (pick < 0)  // every identity is already at its maximum: nothing left to add, accept it
+                break;
+            ++urn[c][pick];
+            ++urnTotal[c];
+            ++urnToppedUp[c];
+        }
     }
     noCapture = halfmove;
     gamePly = int(ply);

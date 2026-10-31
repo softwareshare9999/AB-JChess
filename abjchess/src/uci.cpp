@@ -376,7 +376,20 @@ struct Engine {
                     rejectedPositionFen = fen + " moves " + tok;
                     return;
                 }
+        report_topped_up(next);
         pos = next;
+    }
+
+    // A pool that was short of the face-down pieces is covered instead of refused; say so once per position so a
+    // repaired pool is visible in the GUI's engine log rather than silently changing what the engine searches.
+    void report_topped_up(const Position& p) {
+        for (int c = 0; c < 2; ++c) {
+            if (!p.urnToppedUp[c]) continue;
+            out(std::string("info string ") + (c == RED ? "red" : "black") + " pool was short of the face-down pieces; " +
+                std::to_string(int(p.urnToppedUp[c])) + " identit" + (p.urnToppedUp[c] == 1 ? "y" : "ies") +
+                " added, urn total now " + std::to_string(int(p.urnTotal[c])) + " for " +
+                std::to_string(int(p.darkCount[c])) + " face-down pieces");
+        }
     }
 
     void cmd_go(std::istringstream& is) {

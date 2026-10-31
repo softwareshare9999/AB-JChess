@@ -101,6 +101,9 @@ public:
     int8_t urnTotal[2] = {0, 0};
     int16_t urnMean[2] = {0, 0};  // cached urn_mean_value (exact: recomputed whenever urn changes)
     int8_t darkCount[2] = {0, 0};
+    // Identities added by set_fen to cover a pool that was short of the face-down pieces (0 = pool as sent).
+    // Reported as an info string so a repaired position is never silent.
+    int8_t urnToppedUp[2] = {0, 0};
     int8_t kingSq[2] = {-1, -1};
     int noCapture = 0;
     int gamePly = 0;
