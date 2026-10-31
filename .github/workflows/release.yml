@@ -59,6 +59,50 @@ jobs:
           name: abjchess-windows-x86-64
           path: abjchess/out-win/abjchess-windows-x86-64.exe
 
+  # Single-tier Windows builds, next to the universal one. The universal binary picks its tier
+  # at run time and is what most users want; these exist for people who prefer to pin a tier,
+  # for benchmarks comparing tiers, and for the rare CPU where dispatch mis-detects. Every tier
+  # is compiled from the same sources with the same flags, so all of them bench at 43125.
+  windows-tiers:
+    name: Windows tier ${{ matrix.tier }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        tier:
+          - x86-64
+          - x86-64-sse3-popcnt
+          - x86-64-ssse3
+          - x86-64-sse41-popcnt
+          - x86-64-avx2
+          - x86-64-bmi2
+          - x86-64-avxvnni
+          - x86-64-avx512
+          - x86-64-vnni512
+          - x86-64-avx512icl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64 (POSIX threads)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+
+      - name: Build ${{ matrix.tier }}
+        working-directory: abjchess
+        env:
+          CXX: x86_64-w64-mingw32-g++-posix
+          EXTRA_CXXFLAGS: -include wincompat.h
+        run: |
+          JOBS="$(nproc)" src/isa/build_tier.sh "${{ matrix.tier }}" out-win
+          file "out-win/abjchess-${{ matrix.tier }}.exe"
+          ls -la "out-win/abjchess-${{ matrix.tier }}.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abjchess-windows-tier-${{ matrix.tier }}
+          path: abjchess/out-win/abjchess-${{ matrix.tier }}.exe
+
   macos:
     name: macOS universal
     runs-on: macos-latest
@@ -114,7 +158,7 @@ jobs:
 
   package:
     name: Package binaries
-    needs: [linux, windows, macos, android]
+    needs: [linux, windows, windows-tiers, macos, android]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -174,16 +218,36 @@ jobs:
             Place `${{ env.NNUE_NAME }}` next to the engine, or set:
             `setoption name EvalFile value /path/to/${{ env.NNUE_NAME }}`
 
-            Every binary is a **universal** build: all CPU instruction-set tiers are compiled in
-            and selected at run time, so one file per OS works everywhere. Set `ABJ_TIER=<tier>`
+            Every main binary is a **universal** build: all CPU instruction-set tiers are compiled
+            in and selected at run time, so one file per OS works everywhere. Set `ABJ_TIER=<tier>`
             to force a tier (e.g. `ABJ_TIER=x86-64-avx2`); `--print-tier` reports the choice.
 
             | File | Platform |
             | --- | --- |
-            | `abjchess-windows-x86-64.exe` | Windows x86-64 |
-            | `abjchess-linux-x86-64` | Linux x86-64 (static) |
+            | `abjchess-windows-x86-64.exe` | Windows x86-64 (universal) |
+            | `abjchess-linux-x86-64` | Linux x86-64 (universal, static) |
             | `abjchess-macos` | macOS universal (Apple silicon + Intel) |
             | `abjchess-android-arm64-v8a` | Android aarch64 |
             | `abjchess-android-armeabi-v7a` | Android armv7 |
+
+            ### Windows single-tier builds
+
+            Also included are one executable per x86-64 tier, for pinning a tier deliberately, for
+            comparing tiers in benchmarks, or if run-time dispatch ever mis-detects a CPU. They are
+            built from the same sources with the same flags, so every one of them benches at 43125.
+            Pick the highest tier your CPU supports:
+
+            | File | Requires |
+            | --- | --- |
+            | `abjchess-x86-64.exe` | any x86-64 CPU (slowest) |
+            | `abjchess-x86-64-sse3-popcnt.exe` | SSE3 + POPCNT |
+            | `abjchess-x86-64-ssse3.exe` | SSSE3 |
+            | `abjchess-x86-64-sse41-popcnt.exe` | SSE4.1 + POPCNT |
+            | `abjchess-x86-64-avx2.exe` | AVX2 (Haswell 2013+, Ryzen 2017+) |
+            | `abjchess-x86-64-bmi2.exe` | AVX2 + BMI2/PEXT |
+            | `abjchess-x86-64-avxvnni.exe` | AVX2 + AVX-VNNI (Alder Lake+, Zen 5) |
+            | `abjchess-x86-64-avx512.exe` | AVX-512 F/BW/DQ/VL/CD (Skylake-X, Zen 4+) |
+            | `abjchess-x86-64-vnni512.exe` | AVX-512 + AVX512-VNNI (Ice Lake+, Zen 4+) |
+            | `abjchess-x86-64-avx512icl.exe` | AVX-512 VNNI/VBMI2/GFNI/VAES (Ice Lake+, Zen 5) |
 
             `bench` on the reference binary prints `Nodes searched: 43125`.

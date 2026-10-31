@@ -72,6 +72,48 @@ jobs:
           name: abjchess-windows-x86-64
           path: abjchess/out-win/abjchess-windows-x86-64.exe
 
+  # Single-tier Windows builds. The universal binary is what most users want; these are for
+  # pinning a tier, tier benchmarks, and CPUs where run-time dispatch mis-detects. All bench
+  # at 43125 (same sources, same flags).
+  windows-tiers:
+    name: Windows tier ${{ matrix.tier }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        tier:
+          - x86-64
+          - x86-64-sse3-popcnt
+          - x86-64-ssse3
+          - x86-64-sse41-popcnt
+          - x86-64-avx2
+          - x86-64-bmi2
+          - x86-64-avxvnni
+          - x86-64-avx512
+          - x86-64-vnni512
+          - x86-64-avx512icl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64 (POSIX threads)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+
+      - name: Build ${{ matrix.tier }}
+        working-directory: abjchess
+        env:
+          CXX: x86_64-w64-mingw32-g++-posix
+          EXTRA_CXXFLAGS: -include wincompat.h
+        run: |
+          JOBS="$(nproc)" src/isa/build_tier.sh "${{ matrix.tier }}" out-win
+          file "out-win/abjchess-${{ matrix.tier }}.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abjchess-windows-tier-${{ matrix.tier }}
+          path: abjchess/out-win/abjchess-${{ matrix.tier }}.exe
+
   macos:
     name: macOS universal (arm64 + x86_64)
     runs-on: macos-latest
