@@ -15,128 +15,102 @@ concurrency:
 
 jobs:
   linux:
-    name: Linux ${{ matrix.arch }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86-64-avx2
-            os: ubuntu-24.04
-          - arch: x86-64-bmi2
-            os: ubuntu-24.04
-          - arch: armv8
-            os: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build
-        working-directory: abjchess/src
-        run: |
-          EXE="AB-JChess-linux-${{ matrix.arch }}"
-          make -j"$(nproc)" build ARCH=${{ matrix.arch }} EXE="$EXE"
-          make strip ARCH=${{ matrix.arch }} EXE="$EXE"
-          file "$EXE"
-          ls -la "$EXE"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AB-JChess-linux-${{ matrix.arch }}
-          path: abjchess/src/AB-JChess-linux-${{ matrix.arch }}
-
-  windows:
-    name: Windows ${{ matrix.arch }}
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x86-64-avx2, x86-64-bmi2]
-    defaults:
-      run:
-        shell: msys2 {0}
-        working-directory: abjchess/src
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: ucrt64
-          update: false
-          install: mingw-w64-ucrt-x86_64-gcc make
-
-      - name: Build
-        run: |
-          EXE="AB-JChess-windows-${{ matrix.arch }}.exe"
-          make -j build COMP=mingw ARCH=${{ matrix.arch }} EXE="$EXE"
-          make strip COMP=mingw ARCH=${{ matrix.arch }} EXE="$EXE"
-          ls -la "$EXE"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AB-JChess-windows-${{ matrix.arch }}
-          path: abjchess/src/AB-JChess-windows-${{ matrix.arch }}.exe
-
-  macos:
-    name: macOS ${{ matrix.label }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            arch: apple-silicon
-            label: apple-silicon
-          # Cross-compile Intel from Apple silicon. macos-13 Intel runners
-          # queue for a long time and would block the package job.
-          - os: macos-latest
-            arch: x86-64-avx2
-            label: x86-64-avx2
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build
-        working-directory: abjchess/src
-        run: |
-          EXE="AB-JChess-macos-${{ matrix.label }}"
-          make -j"$(sysctl -n hw.ncpu)" build COMP=clang ARCH=${{ matrix.arch }} EXE="$EXE"
-          make strip COMP=clang ARCH=${{ matrix.arch }} EXE="$EXE"
-          file "$EXE"
-          ls -la "$EXE"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AB-JChess-macos-${{ matrix.label }}
-          path: abjchess/src/AB-JChess-macos-${{ matrix.label }}
-
-  android:
-    name: Android armv8
+    name: Linux universal
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Android NDK (r27d)
+      # One executable containing every x86-64 ISA tier; the tier is chosen at
+      # run time (isa/dispatch_x86.cpp), so there is no avx2/bmi2 split anymore.
+      - name: Build
+        working-directory: abjchess
+        run: |
+          JOBS="$(nproc)" src/isa/build_universal.sh linux out-linux
+          file out-linux/abjchess-linux-x86-64
+          ls -la out-linux/abjchess-linux-x86-64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abjchess-linux-x86-64
+          path: abjchess/out-linux/abjchess-linux-x86-64
+
+  windows:
+    name: Windows universal
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Upstream builds the Windows binary with MinGW-w64 GCC (-posix threads)
+      # cross-compiled from Linux; this is the configuration they verify.
+      - name: Install MinGW-w64 (POSIX threads)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+
+      - name: Build
+        working-directory: abjchess
+        run: |
+          JOBS="$(nproc)" src/isa/build_universal.sh windows out-win
+          file out-win/abjchess-windows-x86-64.exe
+          ls -la out-win/abjchess-windows-x86-64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abjchess-windows-x86-64
+          path: abjchess/out-win/abjchess-windows-x86-64.exe
+
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: abjchess
+        run: |
+          src/isa/build_macos.sh out-mac
+          lipo -info out-mac/abjchess-macos
+          ls -la out-mac/abjchess-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abjchess-macos
+          path: abjchess/out-mac/abjchess-macos
+
+  android:
+    name: Android ${{ matrix.platform }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android-arm64
+            artifact: abjchess-android-arm64-v8a
+          - platform: android-armv7
+            artifact: abjchess-android-armeabi-v7a
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Android NDK (r27c)
         id: ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27d
+          ndk-version: r27c
           add-to-path: false
 
       - name: Build
         env:
-          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
-        working-directory: abjchess/src
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        working-directory: abjchess
         run: |
-          export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-          EXE=AB-JChess-android-armv8
-          make -j"$(nproc)" build COMP=ndk ARCH=armv8 EXE="$EXE"
-          make strip COMP=ndk ARCH=armv8 EXE="$EXE"
-          file "$EXE"
-          ls -la "$EXE"
+          JOBS="$(nproc)" src/isa/build_universal.sh ${{ matrix.platform }} out-android
+          file out-android/${{ matrix.artifact }}
+          ls -la out-android/${{ matrix.artifact }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AB-JChess-android-armv8
-          path: abjchess/src/AB-JChess-android-armv8
+          name: ${{ matrix.artifact }}
+          path: abjchess/out-android/${{ matrix.artifact }}
 
   package:
     name: Package binaries
@@ -157,15 +131,15 @@ jobs:
 
       - name: Run engine go depth test
         run: |
-          chmod +x dist/AB-JChess-linux-x86-64-avx2
+          chmod +x dist/abjchess-linux-x86-64
           python3 .github/scripts/uci_depth_test.py \
-            dist/AB-JChess-linux-x86-64-avx2 \
+            dist/abjchess-linux-x86-64 \
             "dist/$NNUE_NAME"
 
       - name: Add docs
         run: |
-          cp AUTHORS LICENSE README.md dist/
-          chmod +x dist/AB-JChess-* || true
+          cp LICENSE README.md THIRD_PARTY_NOTICES.md 编译指南.md AUTHORS dist/
+          chmod +x dist/abjchess-* || true
           ls -la dist
 
       - uses: actions/upload-artifact@v4
@@ -194,9 +168,16 @@ jobs:
             Place `${{ env.NNUE_NAME }}` next to the engine, or set:
             `setoption name EvalFile value /path/to/${{ env.NNUE_NAME }}`
 
-            Pick the binary that matches your OS and CPU:
-            - Windows: `avx2` is the portable build; `bmi2` is faster on Haswell and later
-            - Linux x86-64: same `avx2` / `bmi2` split
-            - Linux ARM: `AB-JChess-linux-armv8`
-            - macOS: `apple-silicon` (M1+) or `x86-64-avx2` (Intel)
-            - Android: `AB-JChess-android-armv8` (aarch64)
+            Every binary is a **universal** build: all CPU instruction-set tiers are compiled in
+            and selected at run time, so one file per OS works everywhere. Set `ABJ_TIER=<tier>`
+            to force a tier (e.g. `ABJ_TIER=x86-64-avx2`); `--print-tier` reports the choice.
+
+            | File | Platform |
+            | --- | --- |
+            | `abjchess-windows-x86-64.exe` | Windows x86-64 |
+            | `abjchess-linux-x86-64` | Linux x86-64 (static) |
+            | `abjchess-macos` | macOS universal (Apple silicon + Intel) |
+            | `abjchess-android-arm64-v8a` | Android aarch64 |
+            | `abjchess-android-armeabi-v7a` | Android armv7 |
+
+            `bench` on the reference binary prints `Nodes searched: 43125`.

@@ -70,7 +70,6 @@ Testing/
 
 # Local engine binaries and GCC LTO leftovers
 /abjchess/src/AB-JChess
-/abjchess/src/AB-JChess-*
 /abjchess/src/PikaJieQi*
 .depend
 *.lto_wrapper_args
@@ -82,3 +81,9 @@ Testing/
 # Network weights (download from a release; do not commit)
 *.nnue
 /release/
+
+# Universal build outputs (abjchess/src/isa/build_*.sh)
+/abjchess/out-*/
+/abjchess/src/out-*/
+/abjchess/src/abjchess-*
+/abjchess/src/obj-*

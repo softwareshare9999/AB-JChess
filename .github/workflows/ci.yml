@@ -7,37 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  android:
-    name: Android armv8
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Android NDK (r27d)
-        id: ndk
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27d
-          add-to-path: false
-
-      - name: Build Jieqi Android engine (armv8)
-        env:
-          NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
-        run: |
-          export PATH="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-          cd abjchess/src
-          make -j"$(nproc)" build COMP=ndk ARCH=armv8 EXE=AB-JChess-android-armv8
-          make strip COMP=ndk ARCH=armv8 EXE=AB-JChess-android-armv8
-          file AB-JChess-android-armv8
-          ls -la AB-JChess-android-armv8
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AB-JChess-android-armv8
-          path: abjchess/src/AB-JChess-android-armv8
-
   linux-test:
-    name: Linux AVX2 + UCI smoke test
+    name: Linux universal + UCI smoke test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -45,14 +16,102 @@ jobs:
       - name: Download NNUE weights
         run: bash .github/scripts/fetch_nnue.sh nnue
 
-      - name: Build native engine
+      # build_universal.sh compiles every x86-64 ISA tier into one static
+      # executable and picks the best one at run time (isa/dispatch_x86.cpp).
+      - name: Build universal engine
+        working-directory: abjchess
         run: |
-          cd abjchess/src
-          make -j"$(nproc)" build ARCH=x86-64-avx2 EXE=AB-JChess-linux-x86-64-avx2
-          make strip ARCH=x86-64-avx2 EXE=AB-JChess-linux-x86-64-avx2
+          JOBS="$(nproc)" src/isa/build_universal.sh linux out-linux
+          ls -la out-linux/abjchess-linux-x86-64
 
       - name: Run engine go depth test
         run: |
           python3 .github/scripts/uci_depth_test.py \
-            abjchess/src/AB-JChess-linux-x86-64-avx2 \
+            abjchess/out-linux/abjchess-linux-x86-64 \
             "nnue/$NNUE_NAME"
+
+      - name: Verify bench signature
+        run: |
+          cd abjchess/out-linux
+          cp "../../nnue/$NNUE_NAME" .
+          ./abjchess-linux-x86-64 bench | tee bench.txt
+          grep -q "Nodes searched: 43125" bench.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abjchess-linux-x86-64
+          path: abjchess/out-linux/abjchess-linux-x86-64
+
+  windows:
+    name: Windows universal (MinGW cross-compile)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64 (POSIX threads)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+
+      - name: Build
+        working-directory: abjchess
+        run: |
+          JOBS="$(nproc)" src/isa/build_universal.sh windows out-win
+          file out-win/abjchess-windows-x86-64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abjchess-windows-x86-64
+          path: abjchess/out-win/abjchess-windows-x86-64.exe
+
+  macos:
+    name: macOS universal (arm64 + x86_64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: abjchess
+        run: |
+          src/isa/build_macos.sh out-mac
+          lipo -info out-mac/abjchess-macos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abjchess-macos
+          path: abjchess/out-mac/abjchess-macos
+
+  android:
+    name: Android universal binaries
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android-arm64
+            artifact: abjchess-android-arm64-v8a
+          - platform: android-armv7
+            artifact: abjchess-android-armeabi-v7a
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Android NDK (r27c)
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Build
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        working-directory: abjchess
+        run: |
+          JOBS="$(nproc)" src/isa/build_universal.sh ${{ matrix.platform }} out-android
+          file out-android/${{ matrix.artifact }}
+          ls -la out-android/${{ matrix.artifact }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: abjchess/out-android/${{ matrix.artifact }}
