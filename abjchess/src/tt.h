@@ -26,6 +26,7 @@
 #include "types.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <new>
 
@@ -41,11 +42,22 @@ struct TTEntry {
 };
 static_assert(sizeof(TTEntry) == 16, "TTEntry layout");
 
+struct alignas(8) TTSlot {
+    uint64_t key;
+    uint64_t payload;
+};
+static_assert(sizeof(TTSlot) == 16, "TTSlot layout");
+#if defined(__cpp_lib_atomic_ref)
+static_assert(alignof(TTSlot) >= std::atomic_ref<uint64_t>::required_alignment, "TTSlot atomic alignment");
+#else
+static_assert(alignof(TTSlot) >= 8, "TTSlot atomic alignment");
+#endif
+
 extern int g_ttWays;  // 1: one entry per slot; 2 / 4: buckets of 2 / 4 entries (worth-based replacement)
 
 class TranspositionTable {
 public:
-    struct alignas(64) Line { TTEntry e[4]; };
+    struct alignas(64) Line { TTSlot e[4]; };
 
     TranspositionTable() = default;
     TranspositionTable(const TranspositionTable&) = delete;
@@ -70,14 +82,14 @@ public:
     void prefetch(uint64_t key) const { __builtin_prefetch(&table_[(key & mask_) >> 2]); }
 
     // Returns the matching slot (found = true, out = validated copy) or the slot to overwrite.
-    TTEntry* probe(uint64_t key, bool& found, TTEntry& out) {
+    TTSlot* probe(uint64_t key, bool& found, TTEntry& out) {
         // smpfix: with several search threads the bucket size is at least mtWays_ (TTWaysMT, default 4); Threads=1 is unchanged.
         const int cw = mtWays_ > g_ttWays ? mtWays_ : g_ttWays;
         const int ways = cw >= 4 ? 4 : cw > 1 ? 2 : 1;
         const std::size_t idx = key & mask_ & ~std::size_t(ways - 1);
-        TTEntry* first = &table_[idx >> 2].e[idx & 3];
+        TTSlot* first = &table_[idx >> 2].e[idx & 3];
         for (int i = 0; i < ways; ++i) {
-            TTEntry e = first[i];
+            TTEntry e = load(first[i]);
             if ((e.key ^ data(e)) == key && (e.genBound & 3) != BOUND_NONE) {
                 found = true;
                 e.key = key;
@@ -88,13 +100,13 @@ public:
         found = false;
         out = TTEntry{};
         if (ways == 1) return first;
-        TTEntry* r = first;
+        TTSlot* r = first;
         for (int i = 1; i < ways; ++i)
-            if (worth(first[i]) < worth(*r)) r = &first[i];
+            if (worth(load(first[i])) < worth(load(*r))) r = &first[i];
         return r;
     }
-    void store(TTEntry* slot, uint64_t key, Value v, Bound b, int depth, Move m, Value eval) {
-        const TTEntry old = *slot;
+    void store(TTSlot* slot, uint64_t key, Value v, Bound b, int depth, Move m, Value eval) {
+        const TTEntry old = load(*slot);
         const bool sameKey = (old.key ^ data(old)) == key;
         if (!sameKey || depth + 2 >= old.depth || b == BOUND_EXACT || (old.genBound >> 2) != gen_) {
             TTEntry e;
@@ -104,17 +116,43 @@ public:
             e.depth = uint8_t(depth < 0 ? 0 : depth > 255 ? 255 : depth);
             e.genBound = uint8_t(gen_ << 2 | b);
             e.key = key ^ data(e);
-            *slot = e;
+            write(*slot, e);
         }
     }
     int hashfull() const {
         int n = 0;
         for (std::size_t i = 0; i < 250 && i < lines_; ++i)
-            for (const TTEntry& e : table_[i].e) n += (e.genBound & 3) != BOUND_NONE && (e.genBound >> 2) == gen_;
+            for (const TTSlot& slot : table_[i].e) {
+                const TTEntry e = load(slot);
+                n += (e.genBound & 3) != BOUND_NONE && (e.genBound >> 2) == gen_;
+            }
         return n;
     }
 
 private:
+    static TTEntry load(const TTSlot& slot) {
+        TTEntry e{};
+#if defined(__cpp_lib_atomic_ref)
+        e.key = std::atomic_ref<uint64_t>(const_cast<uint64_t&>(slot.key)).load(std::memory_order_acquire);
+        const uint64_t d = std::atomic_ref<uint64_t>(const_cast<uint64_t&>(slot.payload)).load(std::memory_order_relaxed);
+#else
+        // Android NDK r27's libc++ lacks std::atomic_ref.
+        e.key = __atomic_load_n(&slot.key, __ATOMIC_ACQUIRE);
+        const uint64_t d = __atomic_load_n(&slot.payload, __ATOMIC_RELAXED);
+#endif
+        std::memcpy(&e.move, &d, sizeof d);
+        return e;
+    }
+    static void write(TTSlot& slot, const TTEntry& e) {
+        const uint64_t d = data(e);
+#if defined(__cpp_lib_atomic_ref)
+        std::atomic_ref<uint64_t>(slot.payload).store(d, std::memory_order_relaxed);
+        std::atomic_ref<uint64_t>(slot.key).store(e.key, std::memory_order_release);
+#else
+        __atomic_store_n(&slot.payload, d, __ATOMIC_RELAXED);
+        __atomic_store_n(&slot.key, e.key, __ATOMIC_RELEASE);
+#endif
+    }
     static uint64_t data(const TTEntry& e) {
         uint64_t d;
         std::memcpy(&d, &e.move, sizeof d);

@@ -77,8 +77,8 @@ int P_SeMargin = 16;          // singular beta = ttValue - SeMargin * depth / 8
 int P_HistPrune = 0;          // prune late quiets at depth <= 3 with history < -HistPrune * depth (0 = off)
 int P_NullDepthDiv = 4;       // null-move reduction grows by depth / NullDepthDiv
 int P_PruneDepth = 6;         // move-count / futility pruning of quiets up to this depth
-int P_RazorDepth = 0;         // razoring: drop to quiescence when eval + RazorMargin * depth < alpha (0 = off)
-int P_RazorMargin = 250;
+int P_RazorDepth = 3;         // razoring: drop to quiescence when abs(alpha) < 2000 and eval + RazorMargin * depth <= alpha
+int P_RazorMargin = 511;
 int P_SmpSkip = 1;            // helper depth skipping: 0 = none, 1 = skip (d + id) % 3 == 0, 2 = skip blocks by thread
 int P_SmpDefer = 0;           // ABDADA-style deferral of moves other threads are searching, at depth >= SmpDefer (0 = off)
 int P_SmpVote = 0;            // Lazy SMP: pick the move by depth/score-weighted votes over threads (0 = main thread)
@@ -175,6 +175,8 @@ int P_ChanceCV = 3;           // beyond the chance cap at depth >= ChanceCV: rep
 int P_SeeQuietOrder = 0;     // quiet / face-down moves with SEE < -SeeQuietOrder are ordered after all other quiets (0 = off)
 
 constexpr Value SAT = 10000;  // chance aggregation saturates here (mates collapse to +/-SAT)
+// Every search worker checks the shared hard limit; 1024 nodes keeps the polling overhead low.
+constexpr uint32_t TIME_CHECK_INTERVAL = 1024;
 
 using Clock = std::chrono::steady_clock;
 
@@ -651,7 +653,10 @@ struct Worker {
 };
 
 void Worker::check_time() {
-    if (id != 0 || (++calls & 1023) != 0) return;
+    // Any worker may be the one that gets scheduled after the deadline.  Letting only
+    // worker 0 publish the stop flag can leave helper threads searching indefinitely
+    // when the process is oversubscribed by several concurrent games.
+    if ((++calls & (TIME_CHECK_INTERVAL - 1)) != 0) return;
     if (G.timed && !G.pondering && elapsed() >= G.maximumMs) G.stop = true;
     if (G.nodeLimit && total_nodes() >= uint64_t(G.nodeLimit)) G.stop = true;
 }
@@ -1043,7 +1048,7 @@ Value Worker::qsearch(Value alpha, Value beta, int ply, int qply) {
     }
     const Color us = p.stm;
     bool ttHit = false;
-    TTEntry* tte = nullptr;
+            TTSlot* tte = nullptr;
     TTEntry ttd{};
     if (P_QsTT) {
         tte = TT.probe(tkey(), ttHit, ttd);
@@ -1155,7 +1160,7 @@ Value Worker::search(Value alpha, Value beta, int depth, int ply, bool pvNode, b
 
     bool ttHit;
     TTEntry ttd{};
-    TTEntry* tte = TT.probe(tkey(), ttHit, ttd);
+    TTSlot* tte = TT.probe(tkey(), ttHit, ttd);
     const Value ttValue = ttHit ? value_from_tt(ttd.value, ply) : VALUE_NONE;
     const Bound ttBound = ttHit ? Bound(ttd.genBound & 3) : BOUND_NONE;
     Move ttMove = ttHit ? Move(ttd.move) : MOVE_NONE;
@@ -1182,7 +1187,7 @@ Value Worker::search(Value alpha, Value beta, int depth, int ply, bool pvNode, b
     const bool improving = P_Improving && !inCheck && ply >= 2 && staticEv[ply - 2] != VALUE_NONE &&
                            staticEv[ply] > staticEv[ply - 2];
     if (!pvNode && !inCheck) {
-        if (depth <= P_RazorDepth && !excl && eval + P_RazorMargin * depth < alpha && alpha > -VALUE_KNOWN_WIN) {
+        if (depth <= P_RazorDepth && !excl && std::abs(alpha) < 2000 && eval + P_RazorMargin * depth <= alpha) {
             const Value v = qsearch(alpha, alpha + 1, ply, 0);
             if (G.stop) return VALUE_ZERO;
             if (v <= alpha) return v;
@@ -1734,6 +1739,7 @@ SearchResult Searcher::go(const Position& root, const Limits& limits, const std:
     for (auto& w : workers) {
         w->pos = root;
         w->nodes = 0;
+        w->calls = 0;
         w->chanceLayers = 0;
         w->maxLayers = P_MaxChanceLayers +
                        (P_ChanceLateDark && root.darkCount[RED] + root.darkCount[BLACK] <= P_ChanceLateDark ? P_ChanceLateAdd : 0);

@@ -49,7 +49,7 @@ extern "C" __declspec(dllimport) int __stdcall WideCharToMultiByte(unsigned int,
 #endif
 // Default evaluation net: a separate (losslessly compressed) file next to the engine, no net inside the binary.
 #ifndef ABJ_NET_FILE
-#define ABJ_NET_FILE "abjchess-20261030.nnue"  // compressed HNN small net (JQHNNZ01; format detected by magic)
+#define ABJ_NET_FILE "abjchess-20261127.nnue"
 #endif
 #ifndef ABJ_TIER_NAME
 #define ABJ_TIER_NAME "native"
@@ -170,7 +170,6 @@ struct Engine {
     // "abj" = AB-JChess ABJNNUE package, "legacy" = JQN1 / JQSNNUE1, "none".
     static std::string net_kind() {
         if (!nnue::loaded()) return "none";
-        return "small";  // small-net-only build: the loader accepts nothing else
         if (nnue::is_abj()) return "abj";
         if (hnn::loaded()) return hnn::threats_on() ? "big" : "small";
         return "legacy";
@@ -199,7 +198,7 @@ struct Engine {
         out("AB JChess by Huorongrong,Laoxu(Kouza)");
         out("AB JChess is free of charge. Resale is prohibited.");
         pos.set_fen(START_FEN);
-        // Default net: the compressed small net file ABJ_NET_FILE next to the engine (or in the current directory).
+        // Load the default net beside the engine or in the current directory.
         // No net is compiled into the binary; a missing / bad default net is reported loudly and searching is refused.
         evalFile = ABJ_NET_FILE;
         std::string tried, err;
@@ -238,13 +237,13 @@ struct Engine {
     }
 
     void cmd_uci() {
-        out("id name AB JChess 1 RB");
+        out("id name AB JChess 2");
         out("id author Huorongrong,Laoxu(Kouza)");
         out("option name Hash type spin default 64 min 1 max 16384");
         out("option name Threads type spin default 1 min 1 max 256");
         out(std::string("option name EvalFile type string default ") + ABJ_NET_FILE);
         out("option name Clear Hash type button");
-        out("option name ChaseRule type combo default skyrule var none var default var skyrule");
+        out("option name ChaseRule type combo default default var none var default var skyrule");
         out("uciok");
     }
 

@@ -19,12 +19,8 @@
   You should have received a copy of the GNU General Public License
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-// Small-net-only evaluator facade (release builds, -DJQ_SMALL_ONLY): replaces nnue.cpp + abjnnue.cpp + snnue.cpp +
-// hnnue_small.cpp + threats.cpp. The only evaluator is the HNN small net (hnnue.cpp compiled without the JQT1 threat
-// feature code); EvalFile accepts only a small HNN net (raw JQHNNUE1 or JQHNNL01 / JQHNNZ01 compressed, detected by
-// magic): no threat trailer, width <= 512. Big nets (threat features), ABJNNUE packages, SNN and JQN1 nets are
-// refused with an error and the active net stays. Search results are identical to nnue.cpp with an HNN net loaded
-// (same calls in the same order: refresh / make_dirty / update / evaluate of jq::hnn).
+// HNN evaluator facade. It accepts both the original HNN format and JQT1 threat-feature trailers; the latter
+// are maintained by hnnue.cpp and threats.cpp during refresh and incremental search updates.
 #include "nnue.h"
 #include "eval.h"
 #include "jqnz.h"
@@ -47,7 +43,6 @@ uint64_t g_dualEv[3] = {0, 0, 0};
 
 namespace {
 bool g_loaded = false;
-constexpr int SMALL_MAX_W = 512;
 bool fail(std::string* error, const std::string& m) { if (error) *error = m; return false; }
 }  // namespace
 
@@ -60,15 +55,10 @@ bool load(const std::string& path, std::string* error) {
     if (!rd) return fail(error, "file too short");
     if (!hnn::is_hnn_file(path)) {
         if (!std::memcmp(m, "ABJNNUE", 7) || !std::memcmp(m, "JQN1", 4) || !std::memcmp(m, "JQSNNUE1", 8))
-            return fail(error, "not a small net: this engine supports only the small HNN net (abjchess-20261030.nnue format)");
+            return fail(error, "not an HNN net: this build accepts raw JQHNNUE1 or JQHNNL01 / JQHNNZ01 compressed files");
         return fail(error, "unknown net format (expected a small HNN net, raw JQHNNUE1 or JQHNNL01 / JQHNNZ01 compressed)");
     }
     if (!hnn::load(path, error)) return false;
-    if (hnn::width() > SMALL_MAX_W) {  // a wide net without threat features: not a small net either
-        hnn::unload();
-        g_loaded = false;
-        return fail(error, "HNN: width " + std::to_string(hnn::width()) + " > " + std::to_string(SMALL_MAX_W) + ": a big net; refused, this engine supports only the small net");
-    }
     g_loaded = true;
     return true;
 }
