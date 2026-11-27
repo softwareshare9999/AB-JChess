@@ -191,4 +191,4 @@ jobs:
             | `abjchess-android-armeabi-v7a` | Android armv7 |
 
             Put `${{ env.NNUE_NAME }}` next to the executable. `bench` prints
-            `Nodes searched: 43125`.
+            `Nodes searched: 38074`.
