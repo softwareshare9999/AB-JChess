@@ -1,24 +1,3 @@
-/*
-  ABJchess (AB JChess), a UCI Jieqi engine.
-  Contains code derived from AB-JChess / Pikafish / Stockfish:
-  Stockfish, a UCI chess playing engine derived from Glaurung 2.1
-  Copyright (C) 2004-2025 The Stockfish developers (see AUTHORS file)
-  Based on jqe, Copyright (c) 2026 Devin O'Keefe (MIT licence, see abjchess/LICENSE-jqe-MIT.txt).
-  See THIRD_PARTY_NOTICES.md at the repository root.
-
-  This program is free software: you can redistribute it and/or modify
-  it under the terms of the GNU General Public License as published by
-  the Free Software Foundation, either version 3 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU General Public License for more details.
-
-  You should have received a copy of the GNU General Public License
-  along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
 #include "hnnue.h"
 #include "jqnz.h"
 #include "jqmd5.h"
@@ -62,11 +41,48 @@ std::unique_ptr<int16_t[], FreeDel> g_ftW;
 std::unique_ptr<int32_t[], FreeDel> g_psqt;
 alignas(64) int16_t g_ftB[MAX_W];
 std::unique_ptr<uint8_t[], FreeDel> g_l1w;
+// threats
+int g_thrOn = 0, g_thrInit = 0, g_thrAmp = 3, g_thrWt = 0;  // g_thrWt: threat row width (0 = full width W)
+uint64_t g_thrSeed = 1;
+int8_t* g_thrW = nullptr;
+std::size_t g_thrWSize = 0;
+std::vector<int8_t> g_thrFile;   // JQT1THR1 trailer rows (DIMS x g_thrFileWt); non-empty = threats forced on
+int g_thrFileWt = 0, g_thrForced = 0;
+#ifdef JQ_THR_STATS
+std::atomic<uint64_t> st_makes{0}, st_gens{0}, st_tuples{0}, st_rows{0}, st_refr{0};
+#define THRST(x, n) (x.fetch_add(n, std::memory_order_relaxed))
+#else
 #define THRST(x, n) ((void)0)
-}  // namespace
-void bind_acc_stack(const Acc*, std::size_t, int) {}  // small-net-only build: no threat side table
-
-namespace {
+#endif
+void thr_alloc() {
+    if (!g_thrFile.empty()) { g_thrOn = 1; g_thrWt = g_thrFileWt; }
+    if (!g_thrOn || !g_W) return;
+    thr::init();
+    if (g_thrWt <= 0 || g_thrWt > g_W) g_thrWt = g_W;
+    const std::size_t need = std::size_t(thr::DIMS) * std::size_t(g_thrWt);
+    if (g_thrW && g_thrWSize != need) { jq_aligned_free(g_thrW); g_thrW = nullptr; }
+    if (!g_thrW) {
+        g_thrW = static_cast<int8_t*>(alloc_large(need));
+        g_thrWSize = need;
+    }
+    if (!g_thrFile.empty()) { std::memcpy(g_thrW, g_thrFile.data(), need); return; }
+    uint64_t x = g_thrSeed * 0x9E3779B97F4A7C15ull + 1;
+    for (std::size_t i = 0; i < need; ++i) {  // every page written (no shared zero page in the speed test)
+        int8_t v = 0;
+        if (g_thrInit) {
+            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            v = int8_t(int(x % uint64_t(2 * g_thrAmp + 1)) - g_thrAmp);
+        }
+        g_thrW[i] = v;
+    }
+}
+// Add all active threat rows of `b` for perspective p / mirror m into v (in place).
+void add_threats(const Piece* b, int p, int m, int16_t* v, int32_t* ps) {
+    uint32_t idx[thr::MAX_ACTIVE];
+    const int n = thr::active(b, p, m, idx);
+    THRST(st_rows, uint64_t(n));
+    nnk::apply_thr(nullptr, nullptr, g_W, v, ps, v, ps, nullptr, 0, nullptr, 0, g_thrW, g_thrWt, idx, n, nullptr, 0);
+}
 alignas(64) int32_t g_l1b[NSTACKS][L1];
 alignas(64) int32_t g_l2b[NSTACKS][L2];
 alignas(64) int8_t g_l2w[NSTACKS][L2 * L2];
@@ -79,7 +95,7 @@ alignas(64) int32_t g3_l2b[NSTACKS][64];
 alignas(64) int8_t g3_l2w[NSTACKS][64 * 64];
 int32_t g3_fb[NSTACKS];
 alignas(64) int8_t g3_fw[NSTACKS][128];
-// re-laid-out stacks for the AVX2 fast kernel (headfast.h); g_fast = L1 (16 or 32) when the net's head is
+// h32fast: re-laid-out stacks for the AVX2 fast kernel (headfast.h); g_fast = L1 (16 or 32) when the net's head is
 // W -> L1 -> 32 -> 1 without sq2 (all version-1 nets, version-3 L2 32 no sq2), else 0 (generic kernels above)
 int g_fast = 0;
 alignas(64) nnk::FastHead g_fh[NSTACKS];
@@ -142,12 +158,17 @@ struct FinnyEntry {
     int n = -1;
     unsigned gen = ~0u;
 };
+struct FinnyCache {
+    FinnyEntry tab[2 * 6 * 2];
+    FinnyCache() = default;
+};
 // Refresh of perspective p from the per-thread cache entry of its (bucket, mirror): only the difference between
 // the cached and the new sorted feature lists is applied.
 void finny_refresh(int p, int kb, int mir, uint16_t* f, int n, int16_t* out, int32_t* pout) {
-    static thread_local std::unique_ptr<FinnyEntry[]> tab;
-    if (!tab) tab.reset(new FinnyEntry[2 * 6 * 2]);
-    FinnyEntry* e = &tab[(p * 6 + kb) * 2 + mir];
+    // Search helpers are short-lived on Windows. Keeping this cache in TLS storage avoids a heap allocation and
+    // destructor callback on every helper thread; the MinGW/UCRT TLS teardown path is not robust under rapid churn.
+    static thread_local FinnyCache cache;
+    FinnyEntry* e = &cache.tab[(p * 6 + kb) * 2 + mir];
     const unsigned gen = g_gen.load(std::memory_order_relaxed);
     if (e->gen != gen) { e->n = -1; e->gen = gen; }
     std::sort(f, f + n);
@@ -171,6 +192,10 @@ void finny_refresh(int p, int kb, int mir, uint16_t* f, int n, int16_t* out, int
 }
 
 }  // namespace
+
+namespace { LoadInfo g_li; }
+const LoadInfo& last_load() { return g_li; }
+void bind_acc_stack(const Acc*, std::size_t, int) {}
 
 bool is_hnn_file(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "rb");
@@ -199,23 +224,21 @@ bool load(const std::string& path, std::string* error) {
     return load_buffer(buf.data(), buf.size(), error);
 }
 
-namespace { LoadInfo g_li, g_liPending; }
-const LoadInfo& last_load() { return g_li; }
 bool load_buffer(const uint8_t* data, std::size_t size, std::string* error) {
     auto fail = [&](const char* msg) { if (error) *error = msg; return false; };
     std::vector<uint8_t> dec;
-    g_liPending = LoadInfo{};
-    g_liPending.fileBytes = size;
-    if (jqnz::is_compressed(data, size)) {  // LEB128 / range-coded container: decode to the exact original bytes (CRC-32 checked)
-        g_liPending.fmt = std::string(reinterpret_cast<const char*>(data), 8);
+    LoadInfo li;
+    li.fileBytes = size;
+    if (jqnz::is_compressed(data, size)) {  // LEB128 / range-coded container: decode to the exact original bytes
+        li.fmt = std::string(reinterpret_cast<const char*>(data), 8);
         const auto t0 = std::chrono::steady_clock::now();
         if (!jqnz::decode(data, size, dec, error)) return false;
-        g_liPending.decodeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        li.decodeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         data = dec.data();
         size = dec.size();
     }
-    g_liPending.rawBytes = size;
-    g_liPending.rawMd5 = md5_hex(data, size);
+    li.rawBytes = size;
+    li.rawMd5 = md5_hex(data, size);
     struct View {
         const uint8_t* p; std::size_t n;
         std::size_t size() const { return n; }
@@ -238,9 +261,21 @@ bool load_buffer(const uint8_t* data, std::size_t size, std::string* error) {
     const std::size_t headSz = v3 ? 4 * hL1 + std::size_t(W) * hL1 + 4 * hL2 + std::size_t(hL2) * hL2IN + 4 + hNO
                                   : 64 + std::size_t(W) * L1 + 128 + 1024 + 4 + 32;
     const std::size_t need = (v3 ? 56 : 40) + std::size_t(W) * 2 + std::size_t(nfeat) * W * 2 + std::size_t(nfeat) * NPSQT * 4 + NSTACKS * headSz;
-    if (buf.size() >= need + 8 && std::memcmp(buf.data() + need, "JQT1THR1", 8) == 0)
-        return fail("HNN: this is a big net (JQT1 threat features); refused: this engine supports only the small net");
-    if (buf.size() != need) return fail("HNN: unexpected file size");
+    std::vector<int8_t> trl;
+    int trlWt = 0;
+    if (buf.size() > need) {  // optional JQT1 threat trailer: "JQT1THR1", u32 dims, Wt, 0, 0, int8 rows dims x Wt
+        const std::size_t t = need;
+        uint32_t th[4];
+        if (buf.size() < t + 24 || std::memcmp(buf.data() + t, "JQT1THR1", 8) != 0) return fail("HNN: unexpected file size");
+        std::memcpy(th, buf.data() + t + 8, sizeof th);
+        thr::init();
+        if (th[0] != uint32_t(thr::DIMS) || th[1] == 0 || th[1] % 32 || int(th[1]) > W || th[2] || th[3])
+            return fail("HNN: bad JQT1 threat trailer header");
+        if (buf.size() != t + 24 + std::size_t(th[0]) * th[1]) return fail("HNN: JQT1 threat trailer size");
+        trl.assign(reinterpret_cast<const int8_t*>(buf.data() + t + 24), reinterpret_cast<const int8_t*>(buf.data() + buf.size()));
+        trlWt = int(th[1]);
+    }
+    else if (buf.size() != need) return fail("HNN: unexpected file size");
     g_ftW.reset(static_cast<int16_t*>(alloc_large(std::size_t(nfeat) * W * sizeof(int16_t))));
     g_psqt.reset(static_cast<int32_t*>(alloc_large(std::size_t(nfeat) * NPSQT * sizeof(int32_t))));
     g_l1w.reset(static_cast<uint8_t*>(jq_aligned_alloc(64, std::size_t(NSTACKS) * W * (v3 ? hL1 : L1))));
@@ -273,7 +308,7 @@ bool load_buffer(const uint8_t* data, std::size_t size, std::string* error) {
     g_hL1 = v3 ? hL1 : L1; g_hL2 = v3 ? hL2 : L2; g_hSq2 = hSq2;
     g_fast = 0;
 #ifdef JQ_PAIRWISE_NNZ
-    if (!std::getenv("ABJ_NO_FASTHEAD") && (!v3 || (hL2 == 32 && !hSq2))) {
+    if (!std::getenv("JQE_NO_FASTHEAD") && (!v3 || (hL2 == 32 && !hSq2))) {
         for (int s = 0; s < NSTACKS; ++s) {
             if (!v3) nnk::fast_head_init(g_fh[s], L1, W, g_l1b[s], g_l1w.get() + std::size_t(s) * W * L1, g_l2b[s], g_l2w[s], g_fb[s], g_fw[s]);
             else nnk::fast_head_init(g_fh[s], hL1, W, g3_l1b[s], g_l1w.get() + std::size_t(s) * W * hL1, g3_l2b[s], g3_l2w[s], g3_fb[s], g3_fw[s]);
@@ -288,7 +323,10 @@ bool load_buffer(const uint8_t* data, std::size_t size, std::string* error) {
     set_scheme(scheme);
     g_gen.fetch_add(1);
     g_loaded = true;
-    g_li = g_liPending;
+    g_li = std::move(li);
+    if (!trl.empty()) { g_thrFile.swap(trl); g_thrFileWt = trlWt; g_thrForced = 1; }
+    else if (g_thrForced) { g_thrFile.clear(); g_thrFileWt = 0; g_thrForced = 0; g_thrOn = 0; }
+    thr_alloc();
     return true;
 }
 
@@ -298,11 +336,21 @@ int width() { return g_W; }
 int kb_scheme() { return g_scheme; }
 std::string head_desc() { return g_head ? "v3 L1 " + std::to_string(g_hL1) + " L2 " + std::to_string(g_hL2) + (g_hSq2 ? " sq2" : "") : "v1 L1 16 L2 32"; }
 
-void set_threats(int, int, int, uint64_t, int) {}
-bool threats_on() { return false; }
-int threat_width() { return 0; }
+void set_threats(int on, int init, int amp, uint64_t seed, int width) {
+    g_thrWt = width;
+    g_thrOn = on; g_thrInit = init; g_thrAmp = amp; g_thrSeed = seed;
+    thr_alloc();
+}
+bool threats_on() { return g_thrOn && g_thrW; }
+int threat_width() { return threats_on() ? g_thrWt : 0; }
 bool tacc() { return false; }
-ThrStats thr_stats() { return {0, 0, 0, 0, 0}; }
+ThrStats thr_stats() {
+#ifdef JQ_THR_STATS
+    return {st_makes.load(), st_gens.load(), st_tuples.load(), st_rows.load(), st_refr.load()};
+#else
+    return {0, 0, 0, 0, 0};
+#endif
+}
 
 void refresh(const Position& pos, Acc& acc) {
     Meta& m = acc.m;
@@ -323,6 +371,7 @@ void refresh(const Position& pos, Acc& acc) {
         uint16_t f[64];
         const int n = features(pos, Color(p), m.kb[p], m.mirror[p], f);
         finny_refresh(p, m.kb[p], m.mirror[p], f, n, acc.v[p], acc.ps[p]);
+        if (g_thrOn) add_threats(pos.board, p, m.mirror[p], acc.v[p], acc.ps[p]);
     }
 }
 
@@ -334,6 +383,7 @@ void refresh_nocache(const Position& pos, Acc& acc) {
         uint16_t f[64];
         const int n = features(pos, Color(p), m.kb[p], m.mirror[p], f);
         apply(acc.v[p], acc.ps[p], g_ftB, zero, f, n, nullptr, 0);
+        if (g_thrOn) add_threats(pos.board, p, m.mirror[p], acc.v[p], acc.ps[p]);
     }
 }
 
@@ -356,6 +406,7 @@ void make_delta(const Position& pos, Move mv, Delta& d) {
     m.pieces = int8_t(pos.pcount[0] + pos.pcount[1] - (cap ? 1 : 0));
     m.dark = int8_t(pos.darkCount[0] + pos.darkCount[1] - (type_of(pc) == DARK) - (cap && type_of(cap) == DARK));
     d.valid = true;
+    d.nThr = -1;
     for (int p = 0; p < 2; ++p) {
         const Color persp = Color(p);
         king_state(persp, type_of(pc) == KING && us == persp ? to : pos.kingSq[p], m.kb[p], m.mirror[p]);
@@ -385,15 +436,44 @@ void make_delta(const Position& pos, Move mv, Delta& d) {
         d.add[p][0] = uint16_t(piece_feat(persp, np, to, m.kb[p], m.mirror[p]));
         d.nRem = int8_t(nr);
         d.nAdd = 1;
-#if defined(JQ_PF_FT) && JQ_PF_FT > 0
-        {   // prefetch the FT rows this child's update will read (JQ_PF_FT 1: first 2 lines, 2: whole row)
-            const int lines = JQ_PF_FT >= 2 ? g_W * 2 / 64 : 2;
-            auto pf = [&](int f) { const char* r = reinterpret_cast<const char*>(g_ftW.get() + std::size_t(f) * std::size_t(g_W));
-                                   for (int l = 0; l < lines; ++l) _mm_prefetch(r + 64 * l, _MM_HINT_T1); };
-            pf(d.add[p][0]);
-            for (int i = 0; i < nr; ++i) pf(d.rem[p][i]);
+    }
+    if (g_thrOn) {  // h32fatt: generated after the king states (the board after the move is only kept for a refresh)
+        THRST(st_makes, 1);
+        d.mv = mv;
+#ifdef JQ_THR_LAZY
+        std::memcpy(d.snap, pos.board, NUM_SQ);
+#elif defined(JQ_THR_GEN2)
+        d.nThr = int16_t(thr::gen_move(pos.board, mv, d.thr, d.snap));  // eager: snap = board AFTER the move
+#elif !defined(JQ_THR_PREIDX)
+        const thr::BBIn in{pos.occBB, pos.darkBB, pos.byRoleBB, pos.byColorBB};
+#ifdef ABL_NOGEN
+        d.nThr = 0; (void)in; if (d.refP[0] | d.refP[1]) std::memcpy(d.snap, pos.board, NUM_SQ);
+#else
+        d.nThr = int16_t(thr::gen_move_bb(pos.board, in, mv, d.thr, (d.refP[0] | d.refP[1]) ? d.snap : nullptr));
+#endif
+#else   // experimental: indices + row prefetch in make_delta (slower on the box, kept for reference)
+        const thr::BBIn in{pos.occBB, pos.darkBB, pos.byRoleBB, pos.byColorBB};
+        uint32_t raw[thr::MAX_DIRTY];
+        const int nr = thr::gen_move_bb(pos.board, in, mv, raw, (d.refP[0] | d.refP[1]) ? d.snap : nullptr);
+        d.nThr = int16_t(nr);
+        const int lines = (g_thrWt + 63) / 64;
+        for (int p = 0; p < 2; ++p) {
+            if (d.refP[p]) continue;
+            const int mir = m.mirror[p];
+            uint32_t* o = d.tix[p];
+            int na = 0, nm = 0;
+            for (int i = 0; i < nr; ++i) {
+                const int x = thr::index_of(raw[i], p, mir);
+                if (x < 0) continue;
+                const char* row = reinterpret_cast<const char*>(g_thrW + std::size_t(x) * std::size_t(g_thrWt));
+                for (int l = 0; l < lines && l < JQ_THR_PF_LINES; ++l) __builtin_prefetch(row + 64 * l);
+                if (raw[i] >> 31) o[na++] = uint32_t(x); else o[thr::MAX_DIRTY - 1 - nm++] = uint32_t(x);
+            }
+            d.nTA[p] = int16_t(na); d.nTR[p] = int16_t(nm);
         }
 #endif
+        THRST(st_gens, 1);
+        THRST(st_tuples, uint64_t(d.nThr < 0 ? 0 : d.nThr));
     }
 }
 
@@ -409,6 +489,66 @@ void update(const Acc& prev, Acc& next, const Delta& d) {
         ++next.m.noCapture;
         return;
     }
+#if defined(JQ_THR_PREIDX)
+    if (g_thrOn) {  // h32fatt experimental: indices precomputed in make_delta
+        for (int p = 0; p < 2; ++p) {
+            if (d.refP[p]) {
+                uint16_t f[64];
+                std::memcpy(f, d.full[p], sizeof(uint16_t) * std::size_t(d.nFull[p]));
+                finny_refresh(p, d.m.kb[p], d.m.mirror[p], f, d.nFull[p], next.v[p], next.ps[p]);
+                add_threats(d.snap, p, d.m.mirror[p], next.v[p], next.ps[p]);
+                THRST(st_refr, 1);
+                continue;
+            }
+            const int na = d.nTA[p], nm = d.nTR[p];
+            THRST(st_rows, uint64_t(na + nm));
+            nnk::apply_thr(g_ftW.get(), g_psqt.get(), g_W, next.v[p], next.ps[p], prev.v[p], prev.ps[p], d.add[p], d.nAdd,
+                           d.rem[p], d.nRem, g_thrW, g_thrWt, d.tix[p], na, d.tix[p] + (thr::MAX_DIRTY - nm), nm);
+        }
+    } else
+#else
+    if (g_thrOn) {
+        const uint32_t* raw = d.thr;
+        int nr = d.nThr;
+        uint32_t lraw[thr::MAX_DIRTY];
+        Piece lafter[NUM_SQ];
+        const Piece* after = d.snap;  // eager: snap already holds the board after the move
+        if (nr < 0) {  // lazy: snap = board before the move; generate now
+            nr = thr::gen_move(d.snap, d.mv, lraw, lafter);
+            after = lafter;
+            raw = lraw;
+            THRST(st_gens, 1);
+            THRST(st_tuples, uint64_t(nr));
+        }
+        for (int p = 0; p < 2; ++p) {
+            if (d.refP[p]) {
+                uint16_t f[64];
+                std::memcpy(f, d.full[p], sizeof(uint16_t) * std::size_t(d.nFull[p]));
+                finny_refresh(p, d.m.kb[p], d.m.mirror[p], f, d.nFull[p], next.v[p], next.ps[p]);
+                add_threats(after, p, d.m.mirror[p], next.v[p], next.ps[p]);
+                THRST(st_refr, 1);
+                continue;
+            }
+            uint32_t ta[thr::MAX_DIRTY], tr[thr::MAX_DIRTY];
+            int na = 0, nrm = 0;
+            const int mir = d.m.mirror[p];
+#ifdef ABL_NOIDX
+            nr = 0;
+#endif
+            for (int i = 0; i < nr; ++i) {
+                const int x = thr::index_of(raw[i], p, mir);
+                if (x < 0) continue;
+                if (raw[i] >> 31) ta[na++] = uint32_t(x); else tr[nrm++] = uint32_t(x);
+            }
+            THRST(st_rows, uint64_t(na + nrm));
+#ifdef ABL_NOROWS
+            sinkx += uint32_t(na + nrm) + (na ? ta[0] : 0); na = nrm = 0;
+#endif
+            nnk::apply_thr(g_ftW.get(), g_psqt.get(), g_W, next.v[p], next.ps[p], prev.v[p], prev.ps[p], d.add[p], d.nAdd,
+                           d.rem[p], d.nRem, g_thrW, g_thrWt, ta, na, tr, nrm);
+        }
+    } else
+#endif
     for (int p = 0; p < 2; ++p) {
         if (d.refP[p]) {
             uint16_t f[64];

@@ -1063,7 +1063,7 @@ void Position::undo_null(const StateInfo& st) {
 #endif
 }
 
-int g_chaseRule = CHASE_RULE_SKYRULE;
+int g_chaseRule = CHASE_RULE_DEFAULT;
 
 namespace {
 // ---- Perpetual-chase classification -------------------------------------------------------------

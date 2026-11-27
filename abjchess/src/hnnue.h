@@ -39,6 +39,7 @@
 // then int16 ftB[W], int16 ftW[nfeat][W], int32 psqt[nfeat][16], then 16 stacks exactly as JQSNNUE1.
 #pragma once
 #include "position.h"
+#include "threats.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -60,8 +61,8 @@ struct alignas(64) Acc {
     int16_t v[2][MAX_W];
     int32_t ps[2][NPSQT];
     Meta m;
-    // (the threat-row sum Acc::t lives in a separate big-net-only side table, hnnue.cpp tacc_of(): the small-net
-    // accumulator layout and size are unchanged.)
+    // Threat rows are folded into v[side] during refresh/update; keeping the accumulator layout unchanged lets the
+    // search stack use the same storage for small and JQT1 networks.
 };
 
 // Feature changes of one move (computed by make_delta from the position before the move).
@@ -73,6 +74,12 @@ struct Delta {
     int8_t nFull[2] = {0, 0};
     uint16_t full[2][64];          // refP[p]: all features of p after the move
     Meta m;
+    // JQT1 threat feature changes. The raw tuples are generated from the pre-move board and move;
+    // the active feature indices are resolved per perspective during the incremental update.
+    Move mv = 0;
+    int16_t nThr = -1;
+    Piece snap[NUM_SQ];
+    uint32_t thr[thr::MAX_DIRTY];
 };
 
 // Threat features: on = 0 off (baseline behaviour), 1 on; init = 0 zero weights, 1 random int8 in [-amp, amp].
@@ -80,9 +87,8 @@ struct Delta {
 void set_threats(int on, int init, int amp, uint64_t seed, int width = 0);
 bool threats_on();
 int threat_width();  // threat row width Wt (0 when off)
-bool tacc();         // separate threat accumulator (side table) in use
-// Big-net side table: accumulators first + i * stride (i < n) map to slot i (the search stack); any other Acc gets one of
-// a few extra slots on first use. Only allocated / used when tacc() is on.
+bool tacc();         // retained API; this build folds threat rows into Acc::v
+// Compatibility hook for search builds that keep a separate threat side table.
 void bind_acc_stack(const Acc* first, std::size_t stride, int n);
 // Full recompute without the Finny cache (verification).
 void refresh_nocache(const Position& pos, Acc& acc);
